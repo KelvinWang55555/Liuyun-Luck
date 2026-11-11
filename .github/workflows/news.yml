@@ -1,0 +1,66 @@
+# 每日自动抓取热点新闻，写入 news.json 并提交
+# 北京时间每天 07:30（UTC 23:30，前一天）运行；也可在 Actions 页面手动触发
+name: daily-news
+
+on:
+  schedule:
+    - cron: "30 23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-news:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch daily news
+        env:
+          ENDPOINTS: "https://60s-api.viki.moe/v2/60s https://60s-api.twoollie.workers.dev/v2/60s"
+        run: |
+          python3 << 'EOF'
+          import json, urllib.request, datetime, os
+
+          endpoints = os.environ["ENDPOINTS"].split()
+          data = None
+
+          for url in endpoints:
+              try:
+                  req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                  with urllib.request.urlopen(req, timeout=20) as r:
+                      raw = json.loads(r.read().decode("utf-8"))
+                  # 60s API 返回结构: {code:200, data:{date, news:[...]}}
+                  payload = raw.get("data") or raw
+                  news = payload.get("news") or payload.get("items") or []
+                  if news:
+                      data = payload
+                      break
+              except Exception as e:
+                  print("fail:", url, e)
+
+          out = {"date": "", "updated": "", "items": []}
+          if data:
+              now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+              out["date"] = data.get("date") or now.strftime("%Y年%m月%d日")
+              out["updated"] = now.strftime("%Y-%m-%d %H:%M")
+              out["items"] = [{"title": str(x)[:120]} for x in data["news"][:15]]
+
+          with open("news.json", "w", encoding="utf-8") as f:
+              json.dump(out, f, ensure_ascii=False, indent=2)
+          print("news.json written:", out["date"], len(out["items"]), "items")
+          EOF
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add news.json
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "chore: update daily news $(date -u +%F)"
+            git push
+          fi
